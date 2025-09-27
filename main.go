@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-faker/faker/v4"
+	"github.com/xuri/excelize/v2"
 	"math/rand"
 	"strconv"
 )
@@ -30,8 +31,8 @@ type nameGroup struct {
 	LastName      string `faker:"last_name"`
 }
 
-type emailGroup struct {
-	Emails []string `faker:"email slice_len=2"`
+type email struct {
+	Email string `faker:"email"`
 }
 
 type studentConfig struct {
@@ -41,7 +42,32 @@ type studentConfig struct {
 	includeHomeroom    bool
 	homeroomDispatch   map[string][]string
 	includeRoomNumber  bool
-	roomNumber         map[string][]string
+	roomNumberDispatch map[string][]string
+}
+
+func pickUniqueRandomNumbers(count, min, max int) ([]int, error) {
+	if count <= 0 {
+		return nil, fmt.Errorf("count must be greater than 0")
+	}
+	if min >= max {
+		return nil, fmt.Errorf("min must be less than max")
+	}
+	if count > (max - min + 1) {
+		return nil, fmt.Errorf("cannot pick %d unique numbers from a range of %d numbers", count, (max - min + 1))
+	}
+
+	uniqueNumbers := make(map[int]bool)
+	var result []int
+
+	for len(result) < count {
+		num := rand.Intn(max-min+1) + min
+
+		if _, exists := uniqueNumbers[num]; !exists {
+			uniqueNumbers[num] = true
+			result = append(result, num)
+		}
+	}
+	return result, nil
 }
 
 func gradeRange(lower int, higher int) (string, error) {
@@ -79,14 +105,14 @@ func genName() string {
 	return fmt.Sprintf("%s, %s", name.FirstNameMale, name.LastName)
 }
 
-func genEmails() []string {
-	names := emailGroup{}
-	err := faker.FakeData(&names)
+func genEmail() string {
+	name := email{}
+	err := faker.FakeData(&name)
 	if err != nil {
 		panic(err)
 	}
 
-	return names.Emails
+	return name.Email
 }
 
 func genStudentBasic() studentBasic {
@@ -99,12 +125,34 @@ func genStudentBasic() studentBasic {
 	return student
 }
 
-func genTable(studentNum int, config studentConfig) [][]string {
+func appendEmail(table *[][]string) {
+	for idx, row := range *table {
+		row = append(row, genEmail())
+		(*table)[idx] = row
+	}
+}
+
+func addDuplicateAsEmail(count, emailIdx int, table *[][]string) {
+	indices, err := pickUniqueRandomNumbers(count, 0, len(*table))
+	if err != nil {
+		panic(err)
+	}
+
+	for _, idx := range indices {
+		row := make([]string, len((*table)[idx]))
+		copy(row, (*table)[idx])
+
+		row[emailIdx] = genEmail()
+		*table = append(*table, row)
+	}
+}
+
+func genTable(offsetID, studentNum int, config *studentConfig) [][]string {
 	rows := make([][]string, studentNum)
 	for i := range studentNum {
 		row := []string{}
 
-		id := strconv.Itoa(i)
+		id := strconv.Itoa(2000 + i + offsetID)
 		row = append(row, id)
 
 		// studentName
@@ -127,7 +175,24 @@ func genTable(studentNum int, config studentConfig) [][]string {
 				config.homeroomDispatch[grade] = val
 			}
 
-			idx := rand.Int() % len(val)
+			idx := rand.Intn(len(val))
+			row = append(row, val[idx])
+		}
+
+		if config.includeRoomNumber {
+			if config.roomNumberDispatch == nil {
+				config.roomNumberDispatch = make(map[string][]string)
+			}
+
+			val, ok := config.roomNumberDispatch[grade]
+			if !ok {
+				one := strconv.Itoa(200 + rand.Intn(20))
+				two := strconv.Itoa(100 + rand.Intn(20))
+				val = []string{one, two}
+				config.roomNumberDispatch[grade] = val
+			}
+
+			idx := rand.Intn(len(val))
 			row = append(row, val[idx])
 		}
 		rows[i] = row
@@ -136,20 +201,41 @@ func genTable(studentNum int, config studentConfig) [][]string {
 	return rows
 }
 
+func addA(i int) string {
+	return "A" + strconv.Itoa(i)
+}
+
 func main() {
 	config := studentConfig{
-		includeHomeroom: true,
-		gradeLower:      6,
-		gradeUpper:      8,
+		includeHomeroom:   true,
+		includeRoomNumber: true,
+		gradeLower:        6,
+		gradeUpper:        8,
 	}
 
-	table := genTable(10, config)
-	for row := range table {
-		fmt.Println(table[row])
+	headers := []string{"ID", "Studen Name", "Grade", "Teacher", "HomeRoom", "Email"}
+	table := genTable(0, 50, &config)
+	appendEmail(&table)
+	addDuplicateAsEmail(15, 5, &table)
+
+	f := excelize.NewFile()
+	defer func() {
+		if err := f.Close(); err != nil {
+			fmt.Println(err)
+		}
+	}()
+
+	const sheetName = "Sheet1"
+
+	f.SetSheetRow(sheetName, addA(1), &headers)
+	for i, row := range table {
+		err := f.SetSheetRow(sheetName, addA(i+2), &row)
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 
-	// for range 10 {
-	// 	fmt.Println(genStudentBasic())
-	//
-	// }
+	if err := f.SaveAs("TestBook.xlsx"); err != nil {
+		fmt.Println(err)
+	}
 }
